@@ -23,6 +23,9 @@
 
 - A Mac with Apple silicon, set up for the Mac build first (see the original README
   at the end: `tools/setup.sh` puts the game in `game/` and builds the Mac app).
+  That includes the art pack, `heroes4-mac-assets.zip` from the original project's
+  Releases: `tools/setup.sh` unpacks it into `art/`, and the iPad app takes the side
+  panels of the wide screen from there.
 - **Xcode** from the App Store, with the iOS platform (Xcode > Settings > Components).
 - Your **Apple ID** in Xcode (Xcode > Settings > Apple Accounts), with an **Apple
   Development** certificate (select your team > Manage Certificates > + > Apple
