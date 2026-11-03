@@ -27,7 +27,7 @@ xcode-select -p >/dev/null 2>&1 || { xcode-select --install; die "встанов
 command -v brew >/dev/null || die "спершу встановіть Homebrew: https://brew.sh"
 
 say "Інструменти (Homebrew)"
-brew install cmake ninja pkgconf sdl3 ffmpeg glslang spirv-cross innoextract
+brew install cmake ninja pkgconf sdl3 ffmpeg glslang spirv-cross innoextract llvm@22
 
 say "Файли гри"
 if [[ ! -f "$H4PORT/game/heroes4.exe" ]]; then
