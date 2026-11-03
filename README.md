@@ -1,4 +1,82 @@
-# Heroes of Might and Magic IV for Apple Silicon Macs
+# Heroes of Might and Magic IV for Apple Silicon Macs and iPad
+
+> **This is a fork of [LeoDeadware/HoMM4Deadware](https://github.com/LeoDeadware/HoMM4Deadware)
+> that adds an iPad build.** The Mac build and the original README below are that
+> project's; this fork keeps them as they are and adds the iPad port and a few fixes.
+
+## What this fork adds
+
+- **iPad:** the same native port on an Apple-silicon iPad (tested on an iPad Pro 11"
+  M4), with touch controls. See [iPad](#ipad) below.
+- **Fixes, offered upstream as pull requests** (they apply to the Mac build too):
+  - a town froze after a double click on an army in wide mode (the creature dialog
+    was opened but never drawn);
+  - the pointer lagged wherever windows were open (towns, combat dialogs): it is now
+    drawn by the GPU instead of a repaint for every mouse move;
+  - about 28% less CPU at rest (waits sleep once instead of a millisecond at a time);
+  - `tools/setup.sh` installs `llvm@22`, which the runtime needs to configure.
+- **File names with non-ASCII characters** (e.g. the autosaves of a Cyrillic
+  translation) can be written on macOS/iPadOS (APFS takes only UTF-8 names).
+
+Runtime fixes for the Mac come as separate patches, `patches/x86recomp-*.patch`,
+applied by `tools/setup.sh` after `x86recomp-h4.patch`.
+
+## iPad
+
+What you need:
+
+- everything the Mac build needs (see the original instructions below), done first:
+  `tools/setup.sh` puts the game in `game/` and builds the Mac app;
+- Xcode with the iOS platform (Xcode > Settings > Components), signed in with your
+  Apple ID (Xcode > Settings > Apple Accounts) with an Apple Development certificate
+  (Manage Certificates > + > Apple Development);
+- an Apple-silicon iPad, connected by cable, trusted, with Developer Mode on
+  (Settings > Privacy & Security > Developer Mode).
+
+Then:
+
+```
+tools/ios/setup.sh                                 # the iOS runtime, its lifter, the app
+python3 -I tools/ios/install_device.py --game      # sign, install, copy the game once
+```
+
+The first time, trust your developer certificate on the iPad (Settings > General >
+VPN & Device Management). A free Apple ID signs for 7 days: run
+`python3 -I tools/ios/install_device.py` again to renew (saves are kept). Later builds:
+`tools/ios/build_app.sh device` and `install_device.py` without `--game`.
+
+The iPad build runs on another x86recomp: the one
+[macnativegames](https://github.com/ly05010419/macnativegames) carries for its
+Red Alert 2 port (x86recomp with WinNativeGames' iOS support).
+`tools/ios/fetch_runtime.sh` takes it from there at a pinned commit and applies
+`patches/ios/x86recomp-ios.patch` (this port's runtime patch merged onto it, and the
+iPad fixes).
+
+**Touch controls:** tap = left click; hold still for half a second = right click (the
+game shows its help, which the next tap closes); drag = drag with the left button
+(moves armies, scrolls the map); two-finger tap = right click. A trackpad or mouse
+works as on the Mac.
+
+**Good to know:**
+
+- The iPad gets `game/` as it is: the original English game, or whatever you put
+  there. The Ukrainian translation of the Mac app is not applied to the iPad copy.
+- Saves, settings and the log (`h4-log.txt`) are in the app's Documents (Files app).
+- The iOS Simulator cannot run it (its Metal lacks what SDL_GPU needs): use a device.
+
+## Credits
+
+[LeoDeadware/HoMM4Deadware](https://github.com/LeoDeadware/HoMM4Deadware) (the port),
+[x86recomp](https://github.com/JTM-rootstorm/x86recomp) (the recompiler and runtime),
+[macnativegames](https://github.com/ly05010419/macnativegames) (x86recomp with iOS
+support, from its Red Alert 2 port). All MIT, as is this fork.
+
+---
+
+*The original README follows.*
+
+
+## Heroes of Might and Magic IV for Apple Silicon Macs
 
 Native macOS port of Heroes of Might and Magic IV, in Ukrainian. Pick your language below.<br>
 Нативний порт «Героїв меча і магії IV» для macOS, українською. Оберіть мову нижче.
