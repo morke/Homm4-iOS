@@ -1,13 +1,13 @@
 # Heroes of Might and Magic IV for Apple Silicon Macs and iPad
 
 > **This is a fork of [LeoDeadware/HoMM4Deadware](https://github.com/LeoDeadware/HoMM4Deadware)
-> that adds an iPad build.** The Mac build and the original README below are that
-> project's; this fork keeps them as they are and adds the iPad port and a few fixes.
+> that adds an iPad build.** The Mac build is that project's, kept as it is; its own
+> README is at the end of this page.
 
 ## What this fork adds
 
 - **iPad:** the same native port on an Apple-silicon iPad (tested on an iPad Pro 11"
-  M4), with touch controls. See [iPad](#ipad) below.
+  M4), with touch controls.
 - **Fixes, offered upstream as pull requests** (they apply to the Mac build too):
   - a town froze after a double click on an army in wide mode (the creature dialog
     was opened but never drawn);
@@ -18,51 +18,109 @@
 - **File names with non-ASCII characters** (e.g. the autosaves of a Cyrillic
   translation) can be written on macOS/iPadOS (APFS takes only UTF-8 names).
 
-Runtime fixes for the Mac come as separate patches, `patches/x86recomp-*.patch`,
-applied by `tools/setup.sh` after `x86recomp-h4.patch`.
+<details>
+<summary><b>iPad: what you need</b></summary>
 
-## iPad
+- A Mac with Apple silicon, set up for the Mac build first (see the original README
+  at the end: `tools/setup.sh` puts the game in `game/` and builds the Mac app).
+- **Xcode** from the App Store, with the iOS platform (Xcode > Settings > Components).
+- Your **Apple ID** in Xcode (Xcode > Settings > Apple Accounts), with an **Apple
+  Development** certificate (select your team > Manage Certificates > + > Apple
+  Development). A free Apple ID is enough.
+- An **Apple-silicon iPad** (M1 or later), connected to the Mac by cable.
+- About 2 GB free on the iPad.
 
-What you need:
+</details>
 
-- everything the Mac build needs (see the original instructions below), done first:
-  `tools/setup.sh` puts the game in `game/` and builds the Mac app;
-- Xcode with the iOS platform (Xcode > Settings > Components), signed in with your
-  Apple ID (Xcode > Settings > Apple Accounts) with an Apple Development certificate
-  (Manage Certificates > + > Apple Development);
-- an Apple-silicon iPad, connected by cable, trusted, with Developer Mode on
-  (Settings > Privacy & Security > Developer Mode).
+<details>
+<summary><b>iPad: installation, step by step</b></summary>
 
-Then:
+1. **Prepare the iPad.** Connect it by cable, unlock it and tap *Trust This
+   Computer*. Turn on **Developer Mode**: Settings > Privacy & Security > Developer
+   Mode (the iPad restarts and asks to confirm).
+2. **Build the iPad app** (from the repository's folder, in Terminal):
+   ```
+   tools/ios/setup.sh
+   ```
+   It downloads the iOS runtime, builds its lifter, translates your `heroes4.exe`
+   and builds the app. The first time takes 15-30 minutes.
+3. **Sign and install it, with the game:**
+   ```
+   python3 -I tools/ios/install_device.py --game
+   ```
+   This signs the app with your Apple ID, installs it and copies the game (about
+   1.2 GB) into the app's storage, once.
+4. **Trust your certificate on the iPad** the first time: Settings > General > VPN &
+   Device Management > your Apple ID > Trust.
+5. **Play:** *Heroes IV* is on the home screen.
 
-```
-tools/ios/setup.sh                                 # the iOS runtime, its lifter, the app
-python3 -I tools/ios/install_device.py --game      # sign, install, copy the game once
-```
+</details>
 
-The first time, trust your developer certificate on the iPad (Settings > General >
-VPN & Device Management). A free Apple ID signs for 7 days: run
-`python3 -I tools/ios/install_device.py` again to renew (saves are kept). Later builds:
-`tools/ios/build_app.sh device` and `install_device.py` without `--game`.
+<details>
+<summary><b>iPad: controls</b></summary>
+
+| Gesture | Does | For example |
+| --- | --- | --- |
+| Tap | left click | select a hero or a town, press a button; tap a destination to see the path, tap it again to go |
+| Double tap | double click | open a creature's details in a town or an army |
+| Hold still for half a second | right click | the game's help for an object, army or creature; the next tap closes it |
+| Drag with one finger | drag with the left button | move armies between slots; scroll the adventure map |
+| Tap with two fingers | right click | the same as a hold, at once |
+
+- The pointer jumps to your finger, so the game shows what is under it (the
+  cursor's shape, the status line) as with a mouse.
+- A trackpad or mouse (Magic Keyboard) works as on the Mac, right click included;
+  a hardware keyboard gives the game's keyboard shortcuts.
+- Touches at the screen's edges reach the game at once: to leave it, swipe up from
+  the bottom edge twice.
+
+</details>
+
+<details>
+<summary><b>iPad: updating and renewing</b></summary>
+
+- A **free Apple ID signs for 7 days**; then the app does not open. Connect the iPad
+  and run `python3 -I tools/ios/install_device.py` again: it signs and installs anew,
+  your saves are kept. A paid developer account signs for a year.
+- After changing the code: `tools/ios/build_app.sh device`, then
+  `python3 -I tools/ios/install_device.py` (without `--game`: the game is already
+  on the iPad).
+
+</details>
+
+<details>
+<summary><b>iPad: if something goes wrong</b></summary>
+
+- **"Untrusted Developer"** when opening the app: trust your certificate (step 4).
+- **The app does not open any more:** the 7 days have passed; renew it (see above).
+- **`install_device.py` finds no team:** make the Apple Development certificate in
+  Xcode (see *what you need*).
+- **No iPad found:** unlock it, trust the Mac, check Developer Mode.
+- **Logs:** the app's Documents (Files app > On My iPad > Heroes IV, or Finder > iPad
+  > Files) hold `h4-log.txt` and, after a crash, `h4/crashes/`.
+- The **iOS Simulator** cannot run it (its Metal lacks what SDL_GPU needs): use a
+  device.
+- The iPad gets `game/` as it is: the original English game, or whatever you put
+  there. The Ukrainian translation of the Mac app is not applied to the iPad copy.
+
+</details>
+
+<details>
+<summary><b>How it works</b></summary>
+
+The Mac build is the original project's: x86recomp at a pinned commit with
+`patches/x86recomp-h4.patch`, then this fork's fixes, one patch each
+(`patches/x86recomp-*.patch`, applied by `tools/setup.sh` in name order).
 
 The iPad build runs on another x86recomp: the one
 [macnativegames](https://github.com/ly05010419/macnativegames) carries for its
-Red Alert 2 port (x86recomp with WinNativeGames' iOS support).
-`tools/ios/fetch_runtime.sh` takes it from there at a pinned commit and applies
-`patches/ios/x86recomp-ios.patch` (this port's runtime patch merged onto it, and the
-iPad fixes).
+Red Alert 2 port (x86recomp with WinNativeGames' changes, which add iOS: static
+libraries, one host window, touch). `tools/ios/fetch_runtime.sh` takes it from there
+at a pinned commit and applies `patches/ios/x86recomp-ios.patch` (this port's runtime
+patch merged onto it, and what the iPad needed). Nothing of either runtime is kept in
+this repository, and the game's code is the same for both (`h4/src`).
 
-**Touch controls:** tap = left click; hold still for half a second = right click (the
-game shows its help, which the next tap closes); drag = drag with the left button
-(moves armies, scrolls the map); two-finger tap = right click. A trackpad or mouse
-works as on the Mac.
-
-**Good to know:**
-
-- The iPad gets `game/` as it is: the original English game, or whatever you put
-  there. The Ukrainian translation of the Mac app is not applied to the iPad copy.
-- Saves, settings and the log (`h4-log.txt`) are in the app's Documents (Files app).
-- The iOS Simulator cannot run it (its Metal lacks what SDL_GPU needs): use a device.
+</details>
 
 ## Credits
 
@@ -71,10 +129,8 @@ works as on the Mac.
 [macnativegames](https://github.com/ly05010419/macnativegames) (x86recomp with iOS
 support, from its Red Alert 2 port). All MIT, as is this fork.
 
----
-
-*The original README follows.*
-
+<details>
+<summary><b>The original README (the Mac build, in Ukrainian and English)</b></summary>
 
 ## Heroes of Might and Magic IV for Apple Silicon Macs
 
@@ -417,5 +473,7 @@ authors. The license does not cover the game itself: it stays yours, from GOG.
 
 Heroes of Might and Magic is a trademark of Ubisoft. This is a fan project,
 unaffiliated with Ubisoft or GOG.
+
+</details>
 
 </details>
