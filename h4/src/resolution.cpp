@@ -40,6 +40,7 @@
 #include "runtime/gfx/device.h"
 #include "runtime/display.h"
 #include "runtime/guest_alloc.h"
+#include "runtime/hle/present.h"
 #include "runtime/log.h"
 #include "runtime/runtime.h"
 
@@ -811,13 +812,180 @@ void KeepWide(::recomp::Ctx& c) {
 
 }  // namespace
 
+void PaintDirty(::recomp::Ctx& c);
+
+namespace {
+
+// ---- the pointer drawn over the frame (H4_GPU_CURSOR=0: the game's own)
+//
+// The game's cursor is a window (t_mouse_window, an animated window in it)
+// at kCursorWindowVtable. Every move of it ran a paint pass, and every pass
+// recomputes the visible region of every window (0x71FA90): 15-30 ms in a
+// town or under a combat dialog, so the pointer lagged wherever windows
+// were open. Here the window stays invisible to the game (moving it paints
+// nothing) and its picture goes over the frame (gfx::SetPresentCursor),
+// where the game keeps the window. The picture is taken from the game when
+// its sprite changes, once per sprite: one paint pass of the cursor's area
+// without it and one with it, the pixels that differ being the cursor.
+// (Animated cursors keep their first frame.)
+bool GpuCursorOn() {
+  static const bool on = [] {
+    const char* e = Env("GPU_CURSOR");
+    return !e || *e != '0';
+  }();
+  return on;
+}
+
+// The cursor window: the newest, should there be several.
+uint32_t CursorWindow(uint32_t top) {
+  uint32_t cw = 0;
+  ForChildren(top, [&](uint32_t w) {
+    if (Rd32(w) == kCursorWindowVtable) cw = w;
+  });
+  return cw;
+}
+
+// Every cursor window invisible to the game.
+void HideCursors(uint32_t top) {
+  ForChildren(top, [](uint32_t w) {
+    if (Rd32(w) == kCursorWindowVtable) GPtr(w + kVisible)[0] = 0;
+  });
+}
+
+// The offscreen's pixels in r (16-bit), or none.
+std::vector<uint16_t> ReadOffscreen(::recomp::Ctx& c, const Rect& r) {
+  std::vector<uint16_t> out;
+  const uint32_t surf = Rd32(kBackSurface);
+  if (!surf || r.r <= r.l || r.b <= r.t) return out;
+  const uint32_t vt = Rd32(surf);
+  const gaddr desc = ScratchRect() + 0x300;
+  std::memset(GPtr(desc), 0, 124);
+  Wr32(desc, 124);
+  const uint32_t eax = c.eax, ecx = c.ecx, edx = c.edx, esp = c.esp;
+  if (uint32_t(CallGuest(c, Rd32(vt + kLockSlot), {surf, 0, desc, 1, 0})) == 0) {
+    const uint8_t* bits = GPtr(Rd32(desc + 36));
+    const int32_t pitch = int32_t(Rd32(desc + 16));
+    const int sw = int(Rd32(desc + 12)), sh = int(Rd32(desc + 8));
+    if (int(Rd32(desc + 72 + 12)) == 16 && r.l >= 0 && r.t >= 0 && r.r <= sw && r.b <= sh) {
+      out.resize(size_t(r.r - r.l) * (r.b - r.t));
+      for (int y = r.t; y < r.b; y++)
+        std::memcpy(&out[size_t(y - r.t) * (r.r - r.l)], bits + int64_t(y) * pitch + r.l * 2,
+                    size_t(r.r - r.l) * 2);
+    }
+    CallGuest(c, Rd32(vt + kUnlockSlot), {surf, 0});
+  }
+  c.eax = eax;
+  c.ecx = ecx;
+  c.edx = edx;
+  c.esp = esp;
+  return out;
+}
+
+// Marks r (screen coordinates) for the next paint pass.
+void InvalidateArea(::recomp::Ctx& c, uint32_t top, const Rect& r) {
+  const Rect t = RectOf(top);
+  const gaddr rect = ScratchRect() + 0x280;
+  Wr32(rect, uint32_t(r.l - t.l));
+  Wr32(rect + 4, uint32_t(r.t - t.t));
+  Wr32(rect + 8, uint32_t(r.r - t.l));
+  Wr32(rect + 12, uint32_t(r.b - t.t));
+  const uint32_t ecx = c.ecx, eax = c.eax;
+  c.ecx = top;
+  CallGuest(c, kInvalidate, {rect});
+  c.ecx = ecx;
+  c.eax = eax;
+}
+
+// The paint pass once more (for the cursor's area), the stack as on entry.
+void PaintAgain(::recomp::Ctx& c) {
+  const uint32_t esp = c.esp, eax = c.eax;
+  PaintDirty(c);
+  c.esp = esp;
+  c.eax = eax;
+}
+
+// Before a paint pass: every cursor window invisible to the game; the
+// picture of the newest taken again when its sprite or size changed.
+void GpuCursorBeforePaint(::recomp::Ctx& c) {
+  const uint32_t top = Rd32(kTopWindow);
+  const uint32_t cw = top ? CursorWindow(top) : 0;
+  if (!cw) return;
+  uint32_t aw = 0;
+  ForChildren(cw, [&](uint32_t w) {
+    if (!aw) aw = w;
+  });
+  const Rect r = RectOf(cw);
+  const int w = r.r - r.l, h = r.b - r.t;
+  const uint32_t sprite = aw ? Rd32(aw + 0xD8) : 0;
+  static uint32_t last_sprite = 0;
+  static int last_w = -1, last_h = -1;
+  static std::map<uint64_t, std::vector<uint32_t>> taken;  // by sprite and size
+  if (sprite != last_sprite || w != last_w || h != last_h) {
+    last_sprite = sprite;
+    last_w = w;
+    last_h = h;
+    const uint64_t key = uint64_t(sprite) << 32 | uint32_t(w) << 16 | uint32_t(h);
+    auto it = taken.find(key);
+    if (it == taken.end()) {
+      // Without the cursor, then with it, over its area; then without again.
+      HideCursors(top);
+      InvalidateArea(c, top, r);
+      PaintAgain(c);
+      const std::vector<uint16_t> bg = ReadOffscreen(c, r);
+      GPtr(cw + kVisible)[0] = 1;
+      InvalidateArea(c, top, r);
+      PaintAgain(c);
+      const std::vector<uint16_t> fg = ReadOffscreen(c, r);
+      HideCursors(top);
+      InvalidateArea(c, top, r);
+      PaintAgain(c);
+      if (fg.empty() || fg.size() != bg.size()) return;
+      std::vector<uint32_t> argb(fg.size());
+      for (size_t i = 0; i < fg.size(); i++) {
+        if (fg[i] == bg[i]) continue;
+        const uint32_t v = fg[i];
+        argb[i] = 0xFF000000u | ((v >> 11) & 31) * 255 / 31 << 16 |
+                  ((v >> 5) & 63) * 255 / 63 << 8 | (v & 31) * 255 / 31;
+      }
+      it = taken.emplace(key, std::move(argb)).first;
+    }
+    ::recomp::gfx::SetPresentCursor(it->second.data(), w, h);
+  }
+  HideCursors(top);
+}
+
+// From the main loop pass and the present: the pointer where the game keeps
+// the cursor window; none while there is none (an army being dragged: the
+// game takes the window away and moves the army's picture instead).
+void GpuCursorPlace() {
+  const uint32_t top = Rd32(kTopWindow);
+  const uint32_t cw = top ? CursorWindow(top) : 0;
+  const Rect r = cw ? RectOf(cw) : Rect{};
+  static int last_x = -1, last_y = -1;
+  static bool last_shown = false;
+  if (!!cw == last_shown && (!cw || (r.l == last_x && r.t == last_y))) return;
+  last_x = r.l;
+  last_y = r.t;
+  last_shown = cw != 0;
+  ::recomp::gfx::SetPresentCursorPos(r.l, r.t, cw != 0);
+  ::recomp::hle::PresentAgain();  // the game drew nothing
+}
+
+}  // namespace
+
 // Paints the windows' dirty region into the offscreen and returns it
-// (RECT*), which the present then copies to the screen. With the wings
-// shown, the adventure frame under a town or battle sits the pass out (the
-// game clears what it repaints to black and draws the windows there), and
-// the wings go back over the side columns after it: under the game's
-// cursor (a window of its own) only onto the black round its shape.
+// (RECT*), the cursor drawn by the GPU (above).
 void f_00720530(::recomp::Ctx& c) {
+  if (GpuCursorOn()) GpuCursorBeforePaint(c);
+  PaintDirty(c);
+}
+
+// The paint pass. With the wings shown, the adventure frame under a town or
+// battle sits the pass out (the game clears what it repaints to black and
+// draws the windows there), and the wings go back over the side columns
+// after it: under the game's cursor (a window of its own) only onto the
+// black round its shape.
+void PaintDirty(::recomp::Ctx& c) {
   const uint32_t top = Rd32(kTopWindow);
   if (!g_wings || !top) {
     f_00720530_lifted(c);
@@ -883,10 +1051,12 @@ void f_00720530(::recomp::Ctx& c) {
 void f_008D0C70(::recomp::Ctx& c) {
   KeepWide(c);
   f_008D0C70_lifted(c);
+  if (GpuCursorOn()) GpuCursorPlace();  // its own loops (a drag) present here
 }
 
 void f_008D1360(::recomp::Ctx& c) {
   KeepWide(c);
+  if (GpuCursorOn()) GpuCursorPlace();
   f_008D1360_lifted(c);
 }
 

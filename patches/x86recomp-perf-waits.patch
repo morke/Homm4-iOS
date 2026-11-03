@@ -1,0 +1,52 @@
+diff --git a/src/runtime/gfx/gpu_device.cpp b/src/runtime/gfx/gpu_device.cpp
+index 474b4ad..e17f183 100644
+--- a/src/runtime/gfx/gpu_device.cpp
++++ b/src/runtime/gfx/gpu_device.cpp
+@@ -2446,6 +2446,11 @@ void r_color0(inout vec4 c) {
+       // One frame per refresh period, on a steady grid (a drawable may be
+       // free several times in a row and then not for 40 ms).
+       uint64_t now = SDL_GetTicksNS();
++      // One sleep to a millisecond before the slot, the last one precise
++      // (SDL_DelayPrecise alone sleeps a millisecond at a time: up to eight
++      // wake-ups a frame).
++      if (next_show_ns_ > now + 1000000) SDL_DelayNS(next_show_ns_ - now - 1000000);
++      now = SDL_GetTicksNS();
+       if (next_show_ns_ > now) SDL_DelayPrecise(next_show_ns_ - now);
+       now = SDL_GetTicksNS();
+       next_show_ns_ = next_show_ns_ && now < next_show_ns_ + refresh_ns_ ? next_show_ns_ + refresh_ns_
+diff --git a/src/runtime/hle/user32_window.cpp b/src/runtime/hle/user32_window.cpp
+index a1b695f..cd02281 100644
+--- a/src/runtime/hle/user32_window.cpp
++++ b/src/runtime/hle/user32_window.cpp
+@@ -2223,16 +2223,23 @@ HLE("user32.dll", MsgWaitForMultipleObjects, 5) {
+     if (timeout == 0) {
+       // A poll: games that wake a few ms early for their next timer then
+       // poll in a tight loop (HoMM4: hundreds of thousands a second). A
+-      // quarter millisecond keeps their timing and frees the core.
+-      SDL_DelayPrecise(250000);
++      // millisecond's sleep keeps their timing and frees the core.
++      SDL_DelayNS(1000000);
+       return 0x102;
+     }
+-    if (timeout != 0xFFFFFFFF && std::chrono::steady_clock::now() >= deadline)
+-      return 0x102;  // WAIT_TIMEOUT
+-    // A precise 1 ms (the host queue is polled by PumpHostEvents above):
+-    // waiting in the Cocoa run loop instead overslept by up to ~30 ms on
+-    // macOS (timer coalescing), which made timers and shown frames late.
+-    SDL_DelayPrecise(1000000);
++    const auto now = std::chrono::steady_clock::now();
++    if (timeout != 0xFFFFFFFF && now >= deadline) return 0x102;  // WAIT_TIMEOUT
++    // One sleep, up to the deadline but at most kWaitSliceNs, so input is
++    // looked at (PumpHostEvents above) twice a 120 Hz frame. Not the Cocoa
++    // run loop, which overslept by up to ~30 ms on macOS (timer coalescing)
++    // and made timers and shown frames late; not SDL_DelayPrecise, which
++    // sleeps a millisecond at a time (a thousand wake-ups a second).
++    constexpr uint64_t kWaitSliceNs = 4000000;
++    uint64_t ns = kWaitSliceNs;
++    if (timeout != 0xFFFFFFFF)
++      ns = std::min<uint64_t>(
++          ns, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now).count()));
++    SDL_DelayNS(ns);
+   }
+ }
+ 

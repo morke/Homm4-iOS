@@ -44,6 +44,10 @@ if [[ ! -d "$X/.git" ]]; then
   git clone -q "$X86RECOMP" "$X"
   git -C "$X" checkout -q "$X86RECOMP_COMMIT"
   git -C "$X" apply "$H4PORT/patches/x86recomp-h4.patch"
+  # Fixes on top of it, one patch each, in name order.
+  for p in "$H4PORT"/patches/x86recomp-*.patch; do
+    [[ "$p" == */x86recomp-h4.patch ]] || git -C "$X" apply "$p"
+  done
 fi
 (cd "$X" && cmake --preset release >/dev/null && cmake --build --preset release --target recomp_lift)
 

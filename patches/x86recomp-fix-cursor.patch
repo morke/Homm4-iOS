@@ -1,0 +1,245 @@
+diff --git a/src/runtime/gfx/device.h b/src/runtime/gfx/device.h
+index 0687ca2..b429407 100644
+--- a/src/runtime/gfx/device.h
++++ b/src/runtime/gfx/device.h
+@@ -63,6 +63,12 @@ struct PresentOverlay {
+ };
+ // Replaces the overlays (any thread; backends without them ignore them).
+ void SetPresentOverlays(std::vector<PresentOverlay> overlays);
++// A pointer drawn over the frame (any thread; backends without it ignore
++// it), for games that draw their own cursor as part of the frame and pay a
++// repaint for every move of it: the picture (ARGB, w x h, top-down, alpha
++// below 0x80 transparent), and where its top-left corner is in the frame.
++void SetPresentCursor(const uint32_t* argb, int w, int h);
++void SetPresentCursorPos(int x, int y, bool shown);
+ void EncodePixel(uint8_t* p, Format f, uint32_t argb);
+ // Raw pixel value (as stored) for colour keys and fills.
+ uint32_t RawPixel(const uint8_t* p, Format f);
+diff --git a/src/runtime/gfx/gpu_device.cpp b/src/runtime/gfx/gpu_device.cpp
+index 474b4ad..79539a7 100644
+--- a/src/runtime/gfx/gpu_device.cpp
++++ b/src/runtime/gfx/gpu_device.cpp
+@@ -374,6 +374,31 @@ std::mutex g_overlay_mu;
+ std::vector<PresentOverlay> g_overlays;
+ uint64_t g_overlay_gen = 0;
+ 
++// The pointer SetPresentCursor(Pos) set: its picture (and how often it was
++// set), where it is and whether it is shown.
++std::mutex g_cursor_mu;
++std::vector<uint32_t> g_cursor_image;
++int g_cursor_iw = 0, g_cursor_ih = 0;
++uint64_t g_cursor_gen = 0;
++int g_cursor_x = 0, g_cursor_y = 0;
++bool g_cursor_shown = false;
++
++// The pointer: its picture as it is, the transparent pixels dropped.
++constexpr const char* kCursorFrag = R"(#version 450
++layout(location = 0) in vec2 uv;
++layout(location = 0) out vec4 frag;
++layout(set = 2, binding = 0) uniform sampler2D img;
++layout(std140, set = 3, binding = 0) uniform Params {
++  vec4 unused;
++};
++
++void main() {
++  vec4 c = texture(img, uv);
++  if (c.a < 0.5) discard;
++  frag = vec4(c.rgb, 1.0);
++}
++)";
++
+ // ---- uniform blocks (layouts mirror the shaders')
+ 
+ struct GpuLight {
+@@ -1118,6 +1143,7 @@ class GpuDevice final : public Device {
+       // Shown by the presenting thread at the display's pace.
+       PollFilterKey();
+       SyncOverlays();
++      SyncCursor();
+       Flush();
+       if (!pending_) pending_since_ns_ = SDL_GetTicksNS();
+       pending_ = true;
+@@ -1125,6 +1151,7 @@ class GpuDevice final : public Device {
+       return;
+     }
+     SyncOverlays();
++    SyncCursor();
+     Flush();
+     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev_);
+     Show(cmd);
+@@ -2462,6 +2489,7 @@ void r_color0(inout vec4 c) {
+       {
+         std::lock_guard<std::recursive_mutex> l(mu_);
+         SyncOverlays();
++        SyncCursor();
+         Flush();
+         Present(cmd, sc, sw, sh);
+         NoteShown(SDL_GetTicksNS());
+@@ -2607,9 +2635,87 @@ void r_color0(inout vec4 c) {
+       }
+       SDL_EndGPURenderPass(rp);
+     }
++    DrawCursor(cmd, sc, r, w, h);
+     NotePresentation({bb_w_, bb_h_, int(sw), int(sh), r});
+   }
+ 
++  // The pointer's picture, (re)made from SetPresentCursor's when it changed:
++  // before the Flush that precedes a present, like the overlays.
++  void SyncCursor() {
++    std::lock_guard<std::mutex> cl(g_cursor_mu);
++    if (cursor_gen_ == g_cursor_gen) return;
++    cursor_gen_ = g_cursor_gen;
++    if (cursor_tex_) DestroyTexture(cursor_tex_);
++    cursor_tex_ = 0;
++    cursor_iw_ = g_cursor_iw;
++    cursor_ih_ = g_cursor_ih;
++    if (cursor_iw_ <= 0 || cursor_ih_ <= 0 ||
++        g_cursor_image.size() < size_t(cursor_iw_) * cursor_ih_)
++      return;
++    cursor_tex_ = CreateTexture(cursor_iw_, cursor_ih_, 1, Format::A8R8G8B8, false);
++    if (cursor_tex_)
++      UpdateTexture(cursor_tex_, 0, Rect{0, 0, cursor_iw_, cursor_ih_}, g_cursor_image.data(),
++                    uint32_t(cursor_iw_) * 4);
++  }
++
++  // The pointer over the frame shown at r (w x h), scaled as the frame is,
++  // its pixels kept sharp.
++  void DrawCursor(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* sc, const Rect& r, int w, int h) {
++    int x, y;
++    {
++      std::lock_guard<std::mutex> cl(g_cursor_mu);
++      if (!g_cursor_shown || !cursor_tex_) return;
++      x = g_cursor_x;
++      y = g_cursor_y;
++    }
++    SDL_GPUColorTargetInfo t{};
++    t.texture = sc;
++    t.load_op = SDL_GPU_LOADOP_LOAD;
++    t.store_op = SDL_GPU_STOREOP_STORE;
++    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(cmd, &t, 1, nullptr);
++    SDL_BindGPUGraphicsPipeline(rp, CursorPipeline());
++    const float kx = float(w) / float(bb_w_), ky = float(h) / float(bb_h_);
++    SDL_GPUViewport vp{float(r.left) + float(x) * kx, float(r.top) + float(y) * ky,
++                       float(cursor_iw_) * kx, float(cursor_ih_) * ky, 0.0f, 1.0f};
++    SDL_SetGPUViewport(rp, &vp);
++    SDL_GPUTextureSamplerBinding b{textures_[cursor_tex_].tex, cursor_sampler_};
++    SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
++    const float unused[4] = {};
++    SDL_PushGPUFragmentUniformData(cmd, 0, unused, sizeof unused);
++    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
++    SDL_EndGPURenderPass(rp);
++  }
++
++  // The pointer's pipeline for the swap chain's format (built on first use).
++  SDL_GPUGraphicsPipeline* CursorPipeline() {
++    const SDL_GPUTextureFormat fmt = SDL_GetGPUSwapchainTextureFormat(dev_, window_);
++    PresentPipeline();  // the vertex shader
++    if (cursor_pipe_ && cursor_fmt_ == fmt) return cursor_pipe_;
++    if (!cursor_fs_) {
++      cursor_fs_ = CompilePresentShader(kCursorFrag, false, 1);
++      SDL_GPUSamplerCreateInfo si{};
++      si.min_filter = si.mag_filter = SDL_GPU_FILTER_NEAREST;
++      si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
++      si.address_mode_u = si.address_mode_v = si.address_mode_w =
++          SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
++      cursor_sampler_ = SDL_CreateGPUSampler(dev_, &si);
++    }
++    if (cursor_pipe_) SDL_ReleaseGPUGraphicsPipeline(dev_, cursor_pipe_);
++    SDL_GPUColorTargetDescription ct{};
++    ct.format = fmt;
++    SDL_GPUGraphicsPipelineCreateInfo pi{};
++    pi.vertex_shader = present_vs_;
++    pi.fragment_shader = cursor_fs_;
++    pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
++    pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
++    pi.target_info.color_target_descriptions = &ct;
++    pi.target_info.num_color_targets = 1;
++    cursor_pipe_ = SDL_CreateGPUGraphicsPipeline(dev_, &pi);
++    if (!cursor_pipe_) FatalF("gfx: cursor pipeline: %s", SDL_GetError());
++    cursor_fmt_ = fmt;
++    return cursor_pipe_;
++  }
++
+   void ReadTexture(SDL_GPUTexture* tex, int tw, int th, const Rect& r, void* dst, uint32_t pitch,
+                    Format fmt, int level = 0) {
+     Read rd = StartRead(tex, tw, th, r, true, level);
+@@ -3301,6 +3407,14 @@ void r_color0(inout vec4 c) {
+   SDL_GPUShader* overlay_fs_ = nullptr;
+   SDL_GPUGraphicsPipeline* overlay_pipe_ = nullptr;
+   SDL_GPUTextureFormat overlay_fmt_ = SDL_GPU_TEXTUREFORMAT_INVALID;
++  // The pointer (SyncCursor, DrawCursor).
++  TextureId cursor_tex_ = 0;
++  uint64_t cursor_gen_ = 0;
++  int cursor_iw_ = 0, cursor_ih_ = 0;
++  SDL_GPUShader* cursor_fs_ = nullptr;
++  SDL_GPUSampler* cursor_sampler_ = nullptr;
++  SDL_GPUGraphicsPipeline* cursor_pipe_ = nullptr;
++  SDL_GPUTextureFormat cursor_fmt_ = SDL_GPU_TEXTUREFORMAT_INVALID;
+   SDL_GPUTexture* dummy_ = nullptr;
+   int bb_w_ = 0, bb_h_ = 0;
+   // Mailbox emulated on vsync (ResetSwapChain, Show).
+@@ -3401,6 +3515,21 @@ void SetPresentOverlays(std::vector<PresentOverlay> overlays) {
+   g_overlay_gen++;
+ }
+ 
++void SetPresentCursor(const uint32_t* argb, int w, int h) {
++  std::lock_guard<std::mutex> l(g_cursor_mu);
++  g_cursor_image.assign(argb, argb + size_t(std::max(w, 0)) * size_t(std::max(h, 0)));
++  g_cursor_iw = w;
++  g_cursor_ih = h;
++  g_cursor_gen++;
++}
++
++void SetPresentCursorPos(int x, int y, bool shown) {
++  std::lock_guard<std::mutex> l(g_cursor_mu);
++  g_cursor_x = x;
++  g_cursor_y = y;
++  g_cursor_shown = shown;
++}
++
+ std::unique_ptr<Device> CreateGpuDevice(SDL_Window* window) {
+   auto d = std::make_unique<GpuDevice>(window);
+   if (!d->Init()) return nullptr;
+diff --git a/src/runtime/hle/ddraw.cpp b/src/runtime/hle/ddraw.cpp
+index 7b729f4..9a812c4 100644
+--- a/src/runtime/hle/ddraw.cpp
++++ b/src/runtime/hle/ddraw.cpp
+@@ -483,6 +483,9 @@ void PushFront(Surface& s, const gfx::Rect& r) {
+   if (slow_ms > 0 && SDL_GetTicks() >= Uint64(from_s) * 1000) SDL_Delay(Uint32(slow_ms));
+   Gfx()->BlitFront(GPtr(s.mem), s.pitch, s.fmt, r, r);
+   hle::ShotFromMemory(GPtr(s.mem), s.pitch, s.fmt, s.width, s.height);
++  // A frame for the hang watchdog too: games that draw on the primary
++  // never call PresentFrame (a game at rest drew too seldom to count).
++  WatchdogFrame();
+   if (SDL_GetTicks() - g_last_present_ms > 50) Gfx()->PresentFront();
+ }
+ 
+diff --git a/src/runtime/hle/present.cpp b/src/runtime/hle/present.cpp
+index 5697f38..bd9cc86 100644
+--- a/src/runtime/hle/present.cpp
++++ b/src/runtime/hle/present.cpp
+@@ -161,6 +161,10 @@ void ShowPending() {
+   if (g_pending_show) g_pending_show->ShowPending();
+ }
+ 
++void PresentAgain() {
++  if (g_pending_show) g_pending_show->PresentFront();
++}
++
+ uint64_t ShownFrames() { return g_pending_show ? g_pending_show->ShownFrames() : 0; }
+ 
+ }  // namespace recomp::hle
+diff --git a/src/runtime/hle/present.h b/src/runtime/hle/present.h
+index 1073284..c3dff3c 100644
+--- a/src/runtime/hle/present.h
++++ b/src/runtime/hle/present.h
+@@ -21,6 +21,9 @@ void ShotFromMemory(const uint8_t* px, uint32_t pitch, gfx::Format fmt, int w, i
+ // the API that presents through PresentFront sets it.
+ void SetPendingShow(gfx::Device* dev);
+ void ShowPending();
++// Shows that device's frame again (something drawn over it, a pointer set
++// with gfx::SetPresentCursorPos, moved while the game drew nothing).
++void PresentAgain();
+ // Frames shown so far on that device (0 if none or not counted).
+ uint64_t ShownFrames();
+ 
