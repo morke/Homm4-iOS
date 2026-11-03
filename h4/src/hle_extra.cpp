@@ -1,7 +1,6 @@
 // Imports heroes4.exe needs that x86recomp's HLE does not provide (or
-// provides for later APIs only). Registered here, after the runtime's own
-// registrars (the game's static initialisers run last), so a name defined in
-// both uses this one.
+// provides for later APIs only). Registered from main (RegisterHleOverrides),
+// after the runtime's own registrars, so a name defined in both uses this one.
 //
 //   GDI      the game draws its frames into 16-bit DIB sections and copies
 //            them onto DirectDraw surfaces with GetDC + BitBlt (0x7D7BC0,
@@ -30,6 +29,44 @@
 #include "runtime/hle/win32.h"
 #include "runtime/log.h"
 #include "runtime/runtime.h"
+
+// The handlers below must replace the runtime's of the same name. A
+// registration is a write to the registry, the last one wins, and static
+// initialisers run in link order: with the runtime in shared libraries
+// (the Mac) it comes first, linked statically (iOS) after this file. So
+// these are collected here and registered by RegisterHleOverrides, from
+// main, after every static initialiser.
+namespace recomp::h4 {
+namespace {
+struct LateDef {
+  const char* dll;
+  const char* name;
+  int nargs;
+  hle::Fn fn;
+  bool x64;
+};
+std::vector<LateDef>& LateDefs() {
+  static std::vector<LateDef> defs;
+  return defs;
+}
+struct LateRegistrar {
+  LateRegistrar(const char* dll, const char* name, int nargs, hle::Fn fn, bool x64 = false) {
+    LateDefs().push_back({dll, name, nargs, fn, x64});
+  }
+};
+}  // namespace
+
+void RegisterHleOverrides() {
+  for (const LateDef& d : LateDefs()) hle::Registrar(d.dll, d.name, d.nargs, d.fn, d.x64);
+}
+}  // namespace recomp::h4
+
+#undef HLE_NAMED_X
+#define HLE_NAMED_X(dll, export_name, ident, nargs, x64)                   \
+  static uint64_t RECOMP_HLE_CAT(hle_, ident)(::recomp::Ctx & c);              \
+  static ::recomp::h4::LateRegistrar RECOMP_HLE_CAT(reg_, ident){             \
+      dll, export_name, nargs, &RECOMP_HLE_CAT(hle_, ident), x64};          \
+  static uint64_t RECOMP_HLE_CAT(hle_, ident)([[maybe_unused]] ::recomp::Ctx & c)
 
 namespace recomp::hle {
 

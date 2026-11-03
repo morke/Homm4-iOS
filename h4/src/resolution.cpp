@@ -36,6 +36,10 @@
 #include <random>
 #include <set>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include "runtime/ctx.h"
 #include "runtime/gfx/device.h"
 #include "runtime/display.h"
@@ -87,6 +91,9 @@ const Screen& TheScreen() {
     if (!std::strcmp(e, "wide")) {
       int dw = 0, dh = 0;
       DesktopSize(&dw, &dh);
+      // The game is shown in landscape: iPadOS reports the display in its
+      // native portrait orientation before the app has turned.
+      if (dh > dw) std::swap(dw, dh);
       r.h = kLayoutH;
       r.w = dh > 0 ? int(int64_t(dw) * kLayoutH / dh) & ~1 : kLayoutW;
     } else if (std::sscanf(e, "%dx%d", &r.w, &r.h) != 2) {
@@ -828,10 +835,16 @@ namespace {
 // its sprite changes, once per sprite: one paint pass of the cursor's area
 // without it and one with it, the pixels that differ being the cursor.
 // (Animated cursors keep their first frame.)
+// On by default; off on iOS, where a finger moves the pointer by jumps
+// (little to gain). H4_GPU_CURSOR=0/1 either way.
 bool GpuCursorOn() {
   static const bool on = [] {
     const char* e = Env("GPU_CURSOR");
+#if defined(__APPLE__) && TARGET_OS_IOS
+    return e && *e == '1';
+#else
     return !e || *e != '0';
+#endif
   }();
   return on;
 }

@@ -12,7 +12,7 @@
 set -euo pipefail
 
 H4PORT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$H4PORT/h4/out/build/release"
+BUILD="${H4_BUILD:-$H4PORT/h4/out/build/release}"  # H4_BUILD: another build of h4
 APP="$HOME/Applications/Heroes IV.app"
 C="$APP/Contents"
 
@@ -51,10 +51,16 @@ for f in "$H4PORT"/art/combat_wings/{paradise,hell}_296x2048.png \
   sips -s format bmp "$f" --out "$C/Resources/wings/${b%_296x2048}.bmp" >/dev/null
 done
 
-# Icon from the GOG installer's .ico.
-if [[ ! -f "$C/Resources/h4.icns" ]]; then
+# Icon: art/app_icon.png (a full-bleed square, optional), else the GOG
+# installer's .ico; made again whenever the art is newer than the icon.
+ICON_ART="$H4PORT/art/app_icon.png"
+if [[ ! -f "$C/Resources/h4.icns" || ( -f "$ICON_ART" && "$ICON_ART" -nt "$C/Resources/h4.icns" ) ]]; then
   tmp="$(mktemp -d)"
-  sips -s format png "$H4PORT/game/goggame-1207658915.ico" --out "$tmp/icon.png" >/dev/null
+  if [[ -f "$ICON_ART" ]]; then
+    cp "$ICON_ART" "$tmp/icon.png"
+  else
+    sips -s format png "$H4PORT/game/goggame-1207658915.ico" --out "$tmp/icon.png" >/dev/null
+  fi
   mkdir "$tmp/h4.iconset"
   for sz in 16 32 128 256 512; do
     sips -z $sz $sz "$tmp/icon.png" --out "$tmp/h4.iconset/icon_${sz}x${sz}.png" >/dev/null

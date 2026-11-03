@@ -3,6 +3,8 @@ game/
 symbols/*.log
 h4/generated/
 h4/out/
+h4/generated-ios/
+build/
 third_party/
 loc/catalog/
 loc/extract/
