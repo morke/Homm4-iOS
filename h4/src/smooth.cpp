@@ -47,6 +47,10 @@
 #include <map>
 #include <set>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include "runtime/ctx.h"
 #include "runtime/guest_alloc.h"
 #include "runtime/hle/present.h"
@@ -77,6 +81,14 @@ constexpr uint32_t kArmyMoverVtable = 0x97B37C;
 constexpr uint32_t kTime = 0x71E180;      // the game's clock (ms)
 constexpr uint32_t kSetOffset = 0x41B690;  // sprite::set_offset(POINT*)
 constexpr int32_t kFrame = 16;            // ms
+// Combat (walks, flights, missiles) drawn ahead too, but not on iOS: on an
+// iPad the motion looked choppy with it, at any combat speed, and smooth
+// enough as the game moves it. Armies on the adventure map still are.
+#if defined(__APPLE__) && TARGET_OS_IOS
+constexpr bool kDrawCombatAhead = false;
+#else
+constexpr bool kDrawCombatAhead = true;
+#endif
 constexpr uint32_t kCombatWalkVtable = 0x98E9BC;
 constexpr uint32_t kMissileVtable = 0x98D1FC;
 constexpr uint32_t kFlightVtable = 0x98E98C;
@@ -255,6 +267,9 @@ void DrawAhead(::recomp::Ctx& c, int32_t now) {
   int i = 0;
   for (uint32_t n = Rd32(head); n && n != head && i < 256; n = Rd32(n), i++) {
     const uint32_t t = Rd32(n + 8);
+    if (!kDrawCombatAhead && t &&
+        (Rd32(t) == kCombatWalkVtable || Rd32(t) == kFlightVtable || Rd32(t) == kMissileVtable))
+      continue;
     if (t && Rd32(t) == kCombatWalkVtable) {
       const int32_t interval = int32_t(Rd32(t + 4));
       const int32_t since = now - (int32_t(Rd32(t + 0x14)) - interval);
