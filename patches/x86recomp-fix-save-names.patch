@@ -1,0 +1,65 @@
+diff --git a/src/runtime/hle/kernel32_file.cpp b/src/runtime/hle/kernel32_file.cpp
+index 7d69e0f..9e4ba86 100644
+--- a/src/runtime/hle/kernel32_file.cpp
++++ b/src/runtime/hle/kernel32_file.cpp
+@@ -81,6 +81,29 @@ std::vector<std::string> Components(const std::string& p) {
+ }
+ 
+ // Absolute, normalised guest path: "C:\x\y".
++// Guest file names (the ANSI code page, Windows-1252) <-> host ones (UTF-8):
++// APFS takes only valid UTF-8 names, and a name with bytes 0x80-0xFF (text
++// of a translation, e.g. Cyrillic in Windows-1251 read here as 1252) could
++// not be made. ASCII names stay as they are; others are kept as the
++// characters of their bytes, so a name the game writes reads back the same.
++bool Ascii(const std::string& s) {
++  for (unsigned char ch : s)
++    if (ch >= 0x80) return false;
++  return true;
++}
++std::string HostName(const std::string& guest) {
++  if (Ascii(guest)) return guest;
++  const std::u16string w = win32::Widen(guest);
++  bool bad;
++  return win32::Utf16ToUtf8(w.data(), w.size(), &bad);
++}
++std::string GuestName(const std::string& host) {
++  if (Ascii(host)) return host;
++  bool bad;
++  return win32::Narrow(
++      win32::Utf8ToUtf16(reinterpret_cast<const uint8_t*>(host.data()), host.size(), &bad));
++}
++
+ std::string AbsGuest(std::string p) {
+   std::replace(p.begin(), p.end(), '/', '\\');
+   if (p.size() >= 2 && p[1] == ':') {
+@@ -178,7 +201,7 @@ bool CopyHostFile(const std::string& from, const std::string& to) {
+ }  // namespace
+ 
+ std::string HostPath(const std::string& guest_path, PathAccess access) {
+-  std::string g = AbsGuest(guest_path);
++  std::string g = HostName(AbsGuest(guest_path));
+   std::vector<std::string> comps;
+   if (InstallComponents(g, &comps)) {
+     std::string over = Resolve(OverlayRoot(), comps);
+@@ -733,7 +756,7 @@ void FillFindData(uint32_t fd, const std::string& host_dir, const std::string& n
+   PutFileTime(fd + 20, platform::StatModifyTime(st));  // write
+   Wr32(fd + 28, uint32_t(uint64_t(st.st_size) >> 32));
+   Wr32(fd + 32, uint32_t(st.st_size));
+-  PutStr(fd + 44, name.substr(0, 259));  // cFileName
++  PutStr(fd + 44, GuestName(name).substr(0, 259));  // cFileName
+   // cAlternateFileName (8.3) left empty.
+ }
+ 
+@@ -743,10 +766,10 @@ HLE("kernel32.dll", FindFirstFileA, 2) {
+   std::string gdir = pattern.substr(0, s), mask = pattern.substr(s + 1);
+   if (gdir.size() == 2) gdir += '\\';
+   auto f = std::make_shared<FindObject>();
+-  std::string lmask = Lower(mask);
++  std::string lmask = Lower(HostName(mask));
+   if (lmask == "*.*") lmask = "*";
+   std::set<std::string> seen;  // lower case: the overlay hides the install
+-  for (const std::string& hdir : HostDirs(gdir)) {
++  for (const std::string& hdir : HostDirs(HostName(gdir))) {
+     DIR* d = opendir(hdir.c_str());
+     if (!d) continue;
+     while (dirent* e = readdir(d)) {
